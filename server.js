@@ -16,8 +16,7 @@ app.get('/', (req, res) => {
 async function startServer() {
     await connectDB();
     app.listen(port, () => {
-        console.log(`🚀 Server running at http://localhost:${port}`);
+        console.log('🚀 Server running at http://localhost:' + port);
     });
 }
-
 startServer();
