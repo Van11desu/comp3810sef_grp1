@@ -24,29 +24,36 @@ This document covers the Person 3 deliverables:
 | `tests/api-smoke.js` | End-to-end smoke test for every endpoint and rule. |
 | `docs/api-demo.sh` | The presentation demo as a runnable script. |
 
-`server.js` changed by only three lines: the `require`, the `app.use('/api', apiRoutes)`
-mount, and moving `express.json()` below that mount so the API parses its own JSON
-bodies (a broken body then gets a JSON error answer instead of an HTML stack trace).
-No page route or existing behaviour changed.
+`server.js` is the integration point. It now contains Person 2's session + auth
+routes, and the `/api` mount sits **below** the session middleware so the API can
+read `req.session.user`. The API also parses its own JSON bodies (a broken body then
+gets a JSON error answer instead of an HTML stack trace).
 
 ### Wiring in `server.js`
 
 ```js
 app.set('view engine', 'ejs');
 app.use(express.urlencoded({ extended: true }));
+app.use(express.static('public'));
 
-// REST API (Person 3). It reads the logged-in user from req.session, so the
-// express-session middleware must be mounted ABOVE this line. The API parses
-// its own JSON bodies (see routes/api/index.js) so that even a broken body gets
-// a JSON error answer instead of an HTML stack trace.
+app.use(session({                    // ← must stay ABOVE /api
+    secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 * 2 }
+}));
+app.use(setUser);                    // res.locals.user for the EJS pages
+
+app.use(authRoutes);                 // /login /register /logout   (Person 2)
+
+// REST API (Person 3). The API parses its own JSON bodies, so a broken body
+// still gets a JSON error instead of an HTML stack trace.
 app.use('/api', apiRoutes);
+app.use(express.json());             // JSON bodies for the page routes
 
-// JSON bodies for the page routes; the API already parsed its own above.
-app.use(express.json());
+app.get('/', ...);                   // redirect to /books or /login
+app.get('/books', isLoggedIn, ...);  // placeholder until Person 4's catalog view
 ```
-
-> Person 2: insert `app.use(session({ ... }))` **before** the `/api` line above,
-> otherwise the API cannot see the logged-in user.
 
 ---
 
@@ -56,14 +63,24 @@ Every API request must belong to a logged-in session (the catalog included), whi
 matches the "block unauthorized users" requirement. Logging in through Person 2's
 `POST /login` route sets the cookie; the browser or `curl` then sends it back.
 
-The API reads the user from the session in **either** of these shapes, so it does not
-matter which one the login route ends up using:
+`routes/auth.js` stores this in the session on a successful login:
 
 ```js
-req.session.user = { _id: '…', username: 'member1', role: 'member' }
-// or
-req.session = { userId: '…', username: 'member1', role: 'member' }
+req.session.user = {
+    _id: user._id,        // used by the API to record who borrowed what
+    username: user.username,
+    name: user.name,
+    role: user.role
+};
 ```
+
+The API only needs `_id` (or `id`) and `role`; `username`/`name` are used for display.
+It also tolerates the flatter shape `req.session.userId / username / role`, so a
+future refactor of the login route will not break the API.
+
+> The old page-only session (`username`, `name`, `role`) did not carry an id. It was
+> extended with `_id` during the merge so loans are keyed by the real user id instead
+> of the username.
 
 Roles: `member` can read and borrow/return. `librarian` (also `admin` / `staff`) can
 additionally add, edit and delete books and loans. No session → `401`.
@@ -246,12 +263,17 @@ derived from `totalCopies` minus the active loans.
 ## 6. Running and testing
 
 ```bash
+cp .env.example .env # then put your MONGO_URI / SESSION_SECRET in .env
 npm install          # once
 node seed.js         # demo data (Person 1)
-node server.js       # http://localhost:3000
+node server.js       # http://localhost:3000  → redirects to /login
 ```
 
-End-to-end test of the API only (it starts its own server on a free port):
+Log in with one of the seeded accounts (`librarian1` / `member1` / `member2`,
+password `password123`), then the API is available with the same cookie.
+
+End-to-end test of the API only (it starts its own server on a free port, and
+fakes the session, so no login is needed):
 
 ```bash
 node tests/api-smoke.js
@@ -259,7 +281,7 @@ node tests/api-smoke.js
 MONGO_URI="mongodb://127.0.0.1:27017" node tests/api-smoke.js
 ```
 
-The smoke test covers 40+ checks: unauthenticated access, all four HTTP verbs,
+The smoke test covers 50+ checks: unauthenticated access, all four HTTP verbs,
 search, stock changes, borrowing, the out-of-stock and already-borrowed conflicts,
 returning twice, permissions, renewal, stock edits and deletion rules.
 
@@ -360,9 +382,9 @@ curl -s -i -b cookies.txt -X DELETE $BASE/api/books/<BOOK_ID>
 
 ## 8. Integration notes for the rest of the group
 
-**Person 2 (auth)** — the login route just needs to set the session user, in either
-shape shown in section 2. Mount `express-session` **above** the `/api` line in
-`server.js`. The API never touches passwords, it only reads `req.session`.
+**Person 2 (auth)** — merged. `/login`, `/register`, `/logout` and the session
+middleware are in `server.js`, and `routes/auth.js` now also stores `_id` (see
+section 2). The API never touches passwords, it only reads `req.session`.
 
 **Person 4 (UI)** — the catalog page can be powered by `GET /api/books?search=…`
 (pagination included), and the borrow button by `POST /api/loans`. Show
